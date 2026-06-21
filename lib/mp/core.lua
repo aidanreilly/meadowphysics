@@ -75,14 +75,6 @@ local function Meadowphysics ()
     setup_params(mp)
     scale:make_params()
 
-    -- -----------------------------------------------------------------------
-    -- Extra params: crow voice assignment per track
-    -- -----------------------------------------------------------------------
-    for i = 1, 8 do
-      params:add_option(i .. "_crow_voice", "track " .. i .. " crow voice",
-        {"crow I (out 1+2)", "crow II (out 3+4)"}, 1)
-    end
-
     -- set up each voice
     for i=1,mp.voice_count do
       voices[i] = create_voice(i, mp)
