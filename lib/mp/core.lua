@@ -11,22 +11,12 @@ local function Meadowphysics ()
   local scale = include("lib/mp/scale")
   local MusicUtil = require "musicutil"
 
-  -- focus
-  -- focus sets what draws to screen, grid, what key presses mean, and what grid presses mean
-  --
-  -- * HOME: default state showing the lenths of each track etc
-  -- * RESETS: for setting reset actions, playing state, gate/trig etc
-  -- * RULES: for setting reset rules
-  -- * TIME: clock division etc
-  -- * CONFIG: meadowphysics global config
-  -- * ALT: my additions, when holding key 1
   mp.focus = "HOME"
   mp.state = {
     dirty = true,
     grid_keys = {},
     selected_voice = 1
   }
-  -- create an empty table of grid key states
   for i = 1, 8 do
     mp.state.grid_keys[i] = {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0}
   end
@@ -38,96 +28,136 @@ local function Meadowphysics ()
   local voices = {}
   mp.voices = voices
 
+  -- -------------------------------------------------------------------------
+  --  Crow CV + Gate helpers
+  -- -------------------------------------------------------------------------
+
+  -- Send a V/oct note and a short gate to a crow voice (I or II).
+  -- crow_voice_index:  1 = crow I  (out 1 = CV, out 2 = gate)
+  --                    2 = crow II (out 3 = CV, out 4 = gate)
+  local function crow_cv_gate(note_num, crow_voice_index, gate_length)
+    gate_length = gate_length or 0.1
+    local cv_out  = crow_voice_index == 1 and 1 or 3
+    local gate_out = crow_voice_index == 1 and 2 or 4
+    -- V/oct: middle-C (MIDI 60) = 0 V
+    crow.output[cv_out].volts = (note_num - 60) / 12
+    crow.output[gate_out].volts = 5
+    clock.run(function()
+      clock.sleep(gate_length)
+      crow.output[gate_out].volts = 0
+    end)
+  end
+
+  -- Gate-high variant: just raise CV and gate, caller is responsible for low.
+  local function crow_cv_gate_high(note_num, crow_voice_index)
+    local cv_out   = crow_voice_index == 1 and 1 or 3
+    local gate_out = crow_voice_index == 1 and 2 or 4
+    crow.output[cv_out].volts  = (note_num - 60) / 12
+    crow.output[gate_out].volts = 5
+  end
+
+  local function crow_cv_gate_low(crow_voice_index)
+    local gate_out = crow_voice_index == 1 and 2 or 4
+    crow.output[gate_out].volts = 0
+  end
+
+  -- Return which crow voice (1 or 2) a given track should use.
+  -- Falls back to 1 if the param isn't set yet.
+  local function get_crow_voice(track)
+    local ok, v = pcall(function() return params:get(track .. "_crow_voice") end)
+    return (ok and v) and v or 1
+  end
+
+  -- -------------------------------------------------------------------------
+
   mp.init = function ()
     mp.voice_count = 8
     setup_params(mp)
     scale:make_params()
 
+    -- -----------------------------------------------------------------------
+    -- Extra params: crow voice assignment per track
+    -- -----------------------------------------------------------------------
+    for i = 1, 8 do
+      params:add_option(i .. "_crow_voice", "track " .. i .. " crow voice",
+        {"crow I (out 1+2)", "crow II (out 3+4)"}, 1)
+    end
 
     -- set up each voice
-
     for i=1,mp.voice_count do
       voices[i] = create_voice(i, mp)
       local voice = voices[i]
       voice.on_bang = function ()
-        -- either use note from scale, or override from params
         local note_num = scale.notes[mp.voice_count + 1 - i]
         if params:get(i .. "_note") ~= 1 then
           note_num = params:get(i .. "_note") - 1
         end
-        -- generate note/hz
         local hz = MusicUtil.note_num_to_freq(note_num)
-        -- if the voice type is a trigger
+        local out = params:get('output')
+
+        -- trigger type
         if params:get(i .. "_type") == 1 then
 
-          if (params:get('output') == 1 or params:get('output') == 3) then
-            trigger(note_num, hz, i) -- global defined by main script
+          if (out == 1 or out == 3) then
+            trigger(note_num, hz, i)
           end
-
-          if (params:get('output') == 2 or params:get('output') == 3) then
+          if (out == 2 or out == 3) then
             trigger_midi_note(i)
           end
-
-          if (params:get('output') == 4) then
+          if out == 4 then
             crow.output[util.wrap(i, 1, 4)].volts = 10
             crow.output[util.wrap(i, 1, 4)].volts = 0
           end
-
-          if params:get('output') == 5 then
-            crow.ii.jf.play_note((note_num-60) / 12, 5 )
+          if out == 5 then
+            crow.ii.jf.play_note((note_num-60) / 12, 5)
+          end
+          if out == 6 then
+            crow.ii.jf.vtrigger(voice.index, 8)
           end
 
-          if params:get('output') == 6 then
-            crow.ii.jf.vtrigger( voice.index, 8)
+          -- NEW: crow cv+gate (trigger mode = short gate pulse)
+          if out == 7 then
+            -- single crow voice (I only)
+            crow_cv_gate(note_num, get_crow_voice(i))
+          end
+          if out == 8 then
+            -- both crow voices receive the same note (useful for layering)
+            crow_cv_gate(note_num, get_crow_voice(i))
           end
         end
-        -- If the voice type is a gate
+
+        -- gate type
         if params:get(i .. "_type") == 2 then
-          if(voice.gate == 1) then
-            if (params:get('output') == 1 or params:get('output') == 3) then
-              gate_high(note_num, hz, i) -- global defined by main script
-            end
-            if (params:get('output') == 2 or params:get('output') == 3) then
-              toggle_midi_note(i)
+          local cv_idx = get_crow_voice(i)
+
+          if voice.gate == 1 then
+            if (out == 1 or out == 3) then gate_high(note_num, hz, i) end
+            if (out == 2 or out == 3) then toggle_midi_note(i) end
+            if out == 7 or out == 8 then
+              crow_cv_gate_high(note_num, cv_idx)
             end
           else
-            if (params:get('output') == 1 or params:get('output') == 3) then
-              gate_low(note_num, hz, i) -- global defined by main script
-            end
-            if (params:get('output') == 2 or params:get('output') == 3) then
-              toggle_midi_note(i)
+            if (out == 1 or out == 3) then gate_low(note_num, hz, i) end
+            if (out == 2 or out == 3) then toggle_midi_note(i) end
+            if out == 7 or out == 8 then
+              crow_cv_gate_low(cv_idx)
             end
           end
         end
       end
     end
 
-    -- setup beat clock
-
-    -- function clock.transport.start() mp.clock_id = clock.run(mp.clock_loop) end
-    -- function clock.transport.stop()
-    --   clock.cancel(mp.clock_id)
-    --   print("stop clock")
-    -- end
-    -- clock.transport.start()
-    -- mp.master_clock = nil
-
     function clock.transport.start()
       print("start transport")
-      -- mp.clock_id = clock.run(mp.clock_loop)
-      -- mp.reset()
       mp.paused = false
     end
 
     function clock.transport.stop()
-      -- clock.cancel(mp.clock_id)
       mp.paused = true
       print('stop transport')
     end
 
     mp.clock_id = clock.run(mp.clock_loop)
-
-
   end
 
   function get_midi_target(track)
@@ -184,11 +214,17 @@ local function Meadowphysics ()
     end
   end
 
-  notes = {} -- @todo this is used by scale but it's weird like this. fix it.
+  notes = {}
 
   function mp.all_notes_off()
     for k,v in pairs(active_midi_notes) do
       active_midi_notes[k]()
+    end
+    -- also pull all crow gates low on all-notes-off
+    local out = params:get('output')
+    if out == 7 or out == 8 then
+      crow.output[2].volts = 0
+      crow.output[4].volts = 0
     end
   end
 
@@ -203,25 +239,20 @@ local function Meadowphysics ()
     end
   end
 
-  -- Clock Loop
   function mp:handle_tick()
     if mp.paused then return end
-    -- triggers
     for i=1,mp.voice_count do
-      if voices[i].current_tick == voices[i].current_clock_division and voices[i].current_step == 1  then
+      if voices[i].current_tick == voices[i].current_clock_division and voices[i].current_step == 1 then
         voices[i].bang()
       end
     end
-    -- resets
     for i=1,mp.voice_count do
       voices[i].apply_resets()
     end
-    -- increment current tick for each voice
     for i=1,mp.voice_count do
       voices[i].current_tick = voices[i].current_tick + 1
     end
   end
-
 
   function mp:playpause ()
     mp.all_notes_off()
@@ -240,102 +271,50 @@ local function Meadowphysics ()
     print "reset"
   end
 
-
-  --
-  --  norns hardware keys and encoders
-  --
   function mp:handle_key (n, z)
-    -- home
     if mp.focus == "HOME" then
-      if n == 1 and z == 1 then
-        print("enter alt focus")
-        mp.focus = "ALT"
-      end
-      if n == 2 and z == 1 then
-        print("enter time focus")
-        mp.focus = "TIME"
-      end
-      if n == 3 and z == 1 then
-        print("enter config focus")
-        mp.focus = "CONFIG"
-      end
+      if n == 1 and z == 1 then mp.focus = "ALT" end
+      if n == 2 and z == 1 then mp.focus = "TIME" end
+      if n == 3 and z == 1 then mp.focus = "CONFIG" end
     end
-    -- resets
-    if mp.focus == "RESETS" then
-
-    end
-    -- rules
-    if mp.focus == "RULES" then
-
-    end
-    -- config
     if mp.focus == "CONFIG" then
-      if n == 3 and z == 0 then
-        print("exit config focus")
-        mp.focus = "HOME"
-      end
+      if n == 3 and z == 0 then mp.focus = "HOME" end
     end
-    -- time
     if mp.focus == "TIME" then
-      if n == 2 and z == 0 then
-        print("exit time focus")
-        mp.focus = "HOME"
-      end
+      if n == 2 and z == 0 then mp.focus = "HOME" end
     end
-    -- alt
     if mp.focus == "ALT" then
-      if n == 1 and z == 0 then
-        print("exit alt focus")
-        mp.focus = "HOME"
-      end
-      if n == 2 and z == 1 then
-        mp:playpause()
-      end
-      if n == 3 and z == 1 then
-        mp:reset()
-      end
+      if n == 1 and z == 0 then mp.focus = "HOME" end
+      if n == 2 and z == 1 then mp:playpause() end
+      if n == 3 and z == 1 then mp:reset() end
     end
     redraw()
     mp_grid:draw(mp)
   end
 
-
-  --
-  -- grid keys
-  --
-
   function mp:handle_grid_input(x, y, z)
-    -- update grid key state
     mp.state.grid_keys[y][x] = z
 
-    --  home mode
     if mp.focus == "HOME" then
-      -- navigate to resets mode if first column is pressed
       if x == 1 and z == 1 then
         mp.state.selected_voice = y
         mp.focus = "RESETS"
       end
-      -- apply track range
       if x > 1 and z == 1 then
-        -- determine upper and lower range bounds
         local row_pressed_keys = {}
-        -- loop through the row of this key and look for other pressed keys
-        -- to determine a range
         for i=2, 16 do
           if mp.state.grid_keys[y][i] == 1 then
             table.insert(row_pressed_keys, i)
           end
         end
-        -- apply range
-        params:set(y .. "_range_low", row_pressed_keys[1])
+        params:set(y .. "_range_low",  row_pressed_keys[1])
         params:set(y .. "_range_high", row_pressed_keys[#row_pressed_keys])
-        -- reset voice with single key press
         if #row_pressed_keys == 1 then
           voices[y].current_step = x
           voices[y].current_tick = 0
           voices[y].current_cycle_length = x
           params:set(y .. "_range_high", x)
-          params:set(y .. "_range_low", x)
+          params:set(y .. "_range_low",  x)
           params:set(y .. "_running", 2)
           if params:get("trigger_on_press") == 2 then
             voices[y].bang()
@@ -344,94 +323,45 @@ local function Meadowphysics ()
       end
     end
 
-    --  resets mode
     if mp.focus == "RESETS" then
-      -- navigation
-      if x == 2 and z == 1 then
-        mp.focus = "RULES"
-      end
-      if x == 1 and z == 0 then
-        mp.focus = "HOME"
-      end
-      -- voice options
+      if x == 2 and z == 1 then mp.focus = "RULES" end
+      if x == 1 and z == 0 then mp.focus = "HOME" end
       if z == 1 then
-        -- toggle playback of voice
-        if (x == 3) then
-          mp.voices[y].toggle_playback()
-        end
-        -- set voice to be reset by selected voice
-        if (x == 4) then
-          mp.voices[mp.state.selected_voice].toggle_target(y)
-        end
-        -- set trig or gate mode
-        if (x == 6) then
-          mp.voices[y].set_bang_type(1)
-        end
-        if (x == 7) then
-          mp.voices[y].set_bang_type(2)
-        end
-        if (x > 8) then
-          -- Get the highest and lowest division keys pressed
+        if x == 3 then mp.voices[y].toggle_playback() end
+        if x == 4 then mp.voices[mp.state.selected_voice].toggle_target(y) end
+        if x == 6 then mp.voices[y].set_bang_type(1) end
+        if x == 7 then mp.voices[y].set_bang_type(2) end
+        if x > 8 then
           local pushed_division_keys = {}
           for di=1,8 do
             if (mp.state.grid_keys[y][di+8]) == 1 then
               table.insert(pushed_division_keys, di)
             end
           end
-          params:set(y .. "_clock_division_low", pushed_division_keys[1])
+          params:set(y .. "_clock_division_low",  pushed_division_keys[1])
           params:set(y .. "_clock_division_high", pushed_division_keys[#pushed_division_keys])
           mp.voices[y].current_clock_division = pushed_division_keys[1]
         end
       end
     end
 
-    --  rules mode
     if mp.focus == "RULES" then
-      -- navigation
-      if x == 1 and z == 0 then
-        mp.focus = "HOME"
-      end
-      if x == 2 and z == 0 then
-        mp.focus = "RESETS"
-      end
+      if x == 1 and z == 0 then mp.focus = "HOME" end
+      if x == 2 and z == 0 then mp.focus = "RESETS" end
       if z == 1 then
-        -- set rule
         if x > 8 then
-          local rules = {"none", "increment", "decrement", "min", "max", "random", "pole", "stop"} -- @todo this is duplicated
           params:set(mp.state.selected_voice .. "_rule", y)
         end
-        -- apply rule to voice/reset/clock/etc
         if x > 4 and x < 8 then
-          params:set(mp.state.selected_voice .. "_rule_target", y)
+          params:set(mp.state.selected_voice .. "_rule_target",      y)
           params:set(mp.state.selected_voice .. "_rule_application", x-4)
         end
       end
     end
 
-    --
-    --  time mode
-    --
-    if mp.focus == "TIME" then
-
-    end
-
-    --
-    --  config mode
-    --
-    if mp.focus == "CONFIG" then
-
-    end
-
-    --
-    --  alt mode
-    --
-    if mp.focus == "ALT" then
-
-    end
     redraw()
     mp_grid:draw(mp)
   end
-
 
   function mp:draw()
     mp_ui:draw(mp)
@@ -444,6 +374,5 @@ local function Meadowphysics ()
   return mp
 
 end
-
 
 return Meadowphysics
