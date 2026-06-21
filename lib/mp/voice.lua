@@ -12,7 +12,7 @@ create_voice = function(i, mp)
   local bool = {"no", "yes"}
   local rules = {"none", "increment", "decrement", "max", "min", "random", "pole", "stop"}
 
-  params:add_group("voice " .. i, 11 + mp.voice_count)
+  params:add_group("voice " .. i, 12 + mp.voice_count)
 
   local midi_options = {"auto", 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}
   local note_options = {"auto"}
@@ -54,9 +54,6 @@ create_voice = function(i, mp)
     default = 8,
   }
 
-
-  --current_cycle_length
-
   params:add{
     type = "number",
     id = i .. "_range_high",
@@ -89,6 +86,14 @@ create_voice = function(i, mp)
     id = i .. "_type",
     name = "type",
     options = {"trigger", "gate"}
+  }
+
+  params:add {
+    type = "option",
+    id = i .. "_crow_voice",
+    name = "crow voice",
+    options = {"crow I (out 1+2)", "crow II (out 3+4)"},
+    default = 1
   }
 
   params:add {
@@ -167,9 +172,6 @@ create_voice = function(i, mp)
           voice.set("running", 2)
           voice.current_tick = 0
           voice.apply_rule(rules[voice.get("rule")])
-          -- if params:get("trigger_on_reset") == 2 and not (voice.index == v.index) then
-          --   voice.bang()
-          -- end
         end
       end
     end
@@ -210,7 +212,6 @@ create_voice = function(i, mp)
     v.current_step = v.current_cycle_length
     v.current_tick = 1
   end
-
 
   local rule_methods = {
 
@@ -262,7 +263,6 @@ create_voice = function(i, mp)
       return value
     end,
 
-
     stop = function (value, min, max)
       v.toggle_playback()
       return max
@@ -277,14 +277,11 @@ create_voice = function(i, mp)
     local rh = rt.get("range_high")
     local cl = rt.get("clock_division_low")
     local ch = rt.get("clock_division_high")
-    -- the three options a rule can be applied to
-    -- see https://monome.org/docs/ansible/meadowphysics/#rules
     local a = {
       {{'current_cycle_length', rl, rh}},
       {{'current_clock_division', cl, ch}},
       {{'current_cycle_length', rl, rh}, {'current_clock_division', cl, ch}}
     }
-    -- uses the above table and actions the rule method
     for i=1,#a[ra] do
       if rule == "none" then return end
       local property = a[ra][i][1]
@@ -292,10 +289,8 @@ create_voice = function(i, mp)
       local max = a[ra][i][3]
       local value = rule_methods[rule](rt[property], min, max)
       rt[property] = value
-      -- print("Apply " .. rule .. " " .. property .. " to track " .. rt.index .. " " .. value .." of (" .. min .. "/" .. max .. ")")
     end
   end
-
 
   return v
 end
